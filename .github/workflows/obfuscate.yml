@@ -1,56 +1,68 @@
-name: Build Obfuscate BPB Panel
+name: Check and Update Worker File
 
 on:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: "0 1 * * *"
+    - cron: '0 * * * *'  # 每小时运行一次
+  workflow_dispatch:     # 允许手动触发
 
 permissions:
-  contents: write
+  contents: write  # 授予写入权限
 
 jobs:
-  build:
+  check-and-update:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "latest"
+    - name: Get current file hash
+      id: current-hash
+      run: |
+        if [ -f "_worker.js" ]; then
+          echo "current_hash=$(sha256sum _worker.js | awk '{print $1}')" >> $GITHUB_OUTPUT
+        else
+          echo "current_hash=none" >> $GITHUB_OUTPUT
+        fi
 
-      - name: Install dependencies
-        run: |
-          npm install -g javascript-obfuscator
-          sudo apt-get install -y unzip
+    - name: Download latest file
+      id: download
+      run: |
+        curl -L --fail -o latest_worker.js https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/worker.js
+        if [ ! -s "latest_worker.js" ]; then
+          echo "ERROR: Downloaded file is empty!"
+          exit 1
+        fi
+        echo "new_hash=$(sha256sum latest_worker.js | awk '{print $1}')" >> $GITHUB_OUTPUT
 
-      - name: Download and extract latest BPB worker
-        run: |
-          wget https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.zip
-          unzip -o unobfuscated-worker.zip
-          mv _worker.js origin.js
+    - name: Compare hashes
+      id: compare
+      run: |
+        if [ "${{ steps.current-hash.outputs.current_hash }}" != "${{ steps.download.outputs.new_hash }}" ]; then
+          echo "has_changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_changed=false" >> $GITHUB_OUTPUT
+        fi
 
-      - name: Obfuscate BPB worker js
-        run: |
-          javascript-obfuscator origin.js --output _worker.js \
-          --compact true \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
-          --string-array true \
-          --string-array-encoding 'base64' \
-          --string-array-threshold 0.75 \
-          --transform-object-keys true \
-          --self-defending false \
-          --simplify true
-
-      - name: 提交更改
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          branch: main
-          commit_message: ':arrow_up: update latest bpb panel'
-          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
-          push_options: '--set-upstream'
+    - name: Process and commit files if changed
+      if: steps.compare.outputs.has_changed == 'true'
+      run: |
+        # 重命名文件
+        mv latest_worker.js _worker.js
+        
+        # 创建压缩包
+        zip _worker.js.zip _worker.js
+        
+        # 配置Git
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # 添加并提交文件
+        git add -f _worker.js _worker.js.zip
+        git commit -m "Update worker files [$(date +'%Y-%m-%d %H:%M:%S')]"
+        
+        # 推送更改
+        git push
